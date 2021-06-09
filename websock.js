@@ -20,7 +20,17 @@ class WsPort {
 	    console.log("exists allready");
 	    return
 	}
+	this.rxque = [];
+	this.txresolve = 0;
+	this.openresolve = 0;
 	this._ws = new WebSocket(conname);
+	this._ws.addEventListener('open', (event) => {
+	    if (this.openresolve != 0) {
+		console.log("open fire");
+		this.openresolve(this.hash);
+		this.openresolve = 0;
+	    }
+	});
 	this._ws.addEventListener('message', (event) => {
 	    let val;
 	    try {
@@ -28,28 +38,76 @@ class WsPort {
 	    } catch (e) {
 		val = '';
 	    } finally {
-		console.log(`<--    ${val}`);
+		console.log(`ws rx:  ${val}`);
+		if (this.txresolve != 0) {
+		    this.txresolve(val);
+		    this.txresolve = 0;
+		}
+		else {
+		    this.rxque.push(val);
+		}
 	    }
 	});
-	console.log(this.hash);
 	WsCons[this.hash] = this;
-	console.log("constructor done");
     }
+
+    waitcon() {
+	var that = this;
+	if (this._ws.readyState == 0) {
+	    console.log("need startup promise");
+	    return new Promise((resolve, reject) => {
+		that.openresolve = resolve;
+		setTimeout(() => {
+		    console.log("stratup timeout");
+		    if (that.openresolve == 0)
+			return;
+		    console.log("stratup timeout failed");
+
+		    that.openresolve = 0;
+		    resolve('timeout');
+		    that.close();
+		}, 2000);
+	    });
+	}
+	return this.hash;
+    }
+
+    getmsg() {
+	var that = this;
+	if (this.rxque.length == 0) {
+		return new Promise((resolve, reject) => {
+		    that.txresolve = resolve;
+		    setTimeout(() => {
+			if (that.txresolve == 0)
+			    return;
+			that.txresolve = 0;
+			resolve('timeout');
+		    }, 60000);
+		});
+	}
+	return this.rxque.shift();
+    }
+
     close() {
 	delete WsCons[this.hash];
 	this._ws.close();
+	if (this.txresolve != 0) {
+	    this.txresolve("CLOSED");
+	    this.txresolve = 0;
+	}
+	if (this.openresolve != 0) {
+	    this.openresolve("CLOSED");
+	    this.openresolve = 0;
+	}
     }
-    isready() {
-	var readyState = this._ws.readyState;
-	console.log(readyState);
-	return readyState;
-    }
+
     send(message) {
 	var readyState = this._ws.readyState;
-	console.log(readyState);
 	if (readyState == 1) {
 	    this._ws.send(message);
 	}
+	else
+	    console.log("ws try send but broken");
     }
 }
 
@@ -73,7 +131,7 @@ class Scratch3WSBlocks {
 			},
 			tx: {
 			    type: Scratch.ArgumentType.STRING,
-			    defaultValue: 'Hallo peter',
+			    defaultValue: 'Hallo Peter',
 			}
 		    }
 		},
@@ -88,17 +146,6 @@ class Scratch3WSBlocks {
 			}
 		    }
 		},
-
-		{
-		    opcode: 'commandState',
-		    text: 'WS state [con]',
-		    blockType: Scratch.BlockType.REPORTER,
-		    arguments: {
-			con: {
-			    type: Scratch.ArgumentType.String,
-			}
-		    }
-		},
 		{
 		    opcode: 'commandClose',
 		    text: 'WS close [con]',
@@ -109,34 +156,55 @@ class Scratch3WSBlocks {
 			}
 		    }
 		},
+		{
+		    opcode: 'getmessage',
+		    text: 'WS receive [con]',
+		    blockType: Scratch.BlockType.REPORTER,
+		    arguments: {
+			con: {
+			    type: Scratch.ArgumentType.String,
+			}
+		    }
+		}
 	    ], // blocks
 	    menus: {
 	    } // menus
 	};
     } // getInfo()
 
+    getmessage(args) {
+	if (args.con in WsCons) {
+	    var ws = WsCons[args.con];
+	    return ws.getmsg();
+	}
+	return String("does not exist");
+    }
+
     commandState(args) {
-	var ws = WsCons[args.con]; //need check if not found
-	return String(ws.isready())
+	if (args.con in WsCons) {
+	    var ws = WsCons[args.con];
+	    return String(ws.isready())
+	}
+	return -1;
     }
 
     commandClose(args) {
-	var ws = WsCons[args.con]; //need check if not found
-	ws.close();
+	if (args.con in WsCons) {
+	    var ws = WsCons[args.con];
+	    ws.close();
+	}
     }
 
     commandConnect( args ) {
-	console.log("Connect");
 	var ws = new WsPort(args.url);
-	let x = ws.hash
-	console.log(x)
-	return String(x);
+	return ws.waitcon();
     }
 
     commandSend( args ) {
-	console.log("SEND");
-	var ws = WsCons[args.con]; //need check if not found
-	ws.send(`${args.tx}`);
+	if (args.con in WsCons) {
+	    var ws = WsCons[args.con]; //need check if not found
+	    ws.send(`${args.tx}`);
+	}
     }
 }
 
